@@ -1,0 +1,127 @@
+---
+output: html_document
+---
+
+## Prediction Assignment
+**Coursera, Practical Machine Learning**  
+**M. Kurki  05/20/2015**
+
+**Background**
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). You can also download the article Qualitative Activity Recognition of Weight Lifting Exercises [1].   
+
+####Loading data
+
+<a href="http://groupware.les.inf.puc-rio.br/static/WLE/WearableComputing_weight_lifting_exercises_biceps_curl_variations.csv">Download the WLE dataset here</a>.   
+First we load the data and make parallel processing possible. Parallel processing is needed because it takes a lot of resources to train the model. At least with Linux the parallel processing worked fine.
+
+```{r echo=FALSE, results='hide',message=FALSE}
+setwd("/home/matti/R/ML/Project/")
+rm(list = ls())
+
+```
+
+``` {r message=FALSE}
+library(caret); library(randomForest); library(parallel); library(doParallel)
+library(lattice); library(ggplot2); library(foreach); library(iterators)
+
+
+trainDataR <- read.table("pml-training.csv", sep = ",", header=T, na.strings=c("NA","","#DIV/0!"))
+testDataR  <- read.table("pml-testing.csv", sep = ",", header=T, na.strings=c("NA","","#DIV/0!"))
+
+registerDoParallel(makeCluster(detectCores()))
+set.seed(4321)
+
+```
+####Preprocessing
+
+**Feature Selection**   
+Next step is to drop out unnecessary columns. We check the test data file (pml-testing.csv) and drop all those columns with no usable data i.e. columns with NA- values. In the article [1] it is said that for feature extraction they used a sliding window approach and for four sensors they calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness. In the test data file there are no sliding window data and therefor we check first the test data to see what variables are available.  We also drop columns which doesn't (seem to) have any valuable information for predictions. After dropping the columns, we end up with the data frame "trainData". 
+
+``` {r}
+testDataR<-testDataR[,colSums(is.na(testDataR)) == 0]
+
+testData<-subset( testDataR, select = -c(X, user_name, raw_timestamp_part_1,raw_timestamp_part_2,cvtd_timestamp,new_window,num_window,problem_id) )
+
+colNs<-colnames(testData)
+
+colNs[length(colNs)+1]<-"classe"
+trainData<-subset( trainDataR, select = colNs)
+```
+
+Next we are identifying correlated predictors because models may benefit from reducing the level of correlation between the predictors. Our cutoff level for correlating variables is 0.75 which I think is acceptable in this case. We end up with the data frame "trainDataF".
+``` {r}
+varCor <-  cor(trainData[,names(trainData) != 'classe'])
+highlyCorVar <- findCorrelation(varCor, cutoff = .75)
+trainDataF <- trainData[,-highlyCorVar]
+varCor2 <- cor(trainDataF[,names(trainDataF) != 'classe'])
+summary(varCor2[upper.tri(varCor2)])
+```
+Thus, we started with 160 columns, first we reduced the number of columns to 53 and after reducing the level of correlation we have 33 columns left. The columns used in the model are shown in the Figure "Importance of Variables in modelFit" later in this report.   
+
+**Partitioning the data**  
+
+Next we create the training and validation sets from the file "pml-training.csv".
+``` {r}
+inTrain <- createDataPartition(trainDataF$classe, p=0.80, list = FALSE)
+train <- trainData[inTrain,]
+validation <- trainData[-inTrain,]
+
+```
+   
+####Model Training
+
+
+Next thing is to train the model "modelFit" and here we use Random forests method.
+
+``` {r}
+ctrl = trainControl(method="cv", number=20, repeats=5)
+modelFit <- train(classe ~ ., data = train, method="rf", trControl=ctrl, importance=TRUE)
+
+print(modelFit)
+
+```
+Now we check the importance of variables in this model.
+``` {r}
+varImpPlot(modelFit$finalModel, main = "Importance of Variables in modelFit", pch=21, col="blue",cex=0.60, sort=TRUE, type=1, n.var=33)
+
+```
+
+####Model Validation
+
+Now we check the in sample error which is unrealistically 0.0. From the confusion matrix we see that all in sample cases are predicted correctly. The model might be over-fitting, but as we see the model works fine when we cross-validate it.
+``` {r}
+predtrain <- predict(modelFit,newdata=train)
+confusionMatrix(predtrain,train$classe)$table
+```
+**Cross-validation**   
+Next we use the validation data that was partitioned from the original training data. Here we see 0.993 accuracy which is pretty good and the out of sample error is 0.007.
+``` {r}
+predval <- predict(modelFit, validation)
+print(confusionMatrix(predval, validation$classe))
+```
+
+
+####Submission
+
+**Predicting 20 test cases**
+``` {r}
+testFinal <- read.csv("pml-testing.csv")
+pred <- predict(modelFit, testFinal)
+pred
+
+# Write files for submission
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(pred)
+```
+
+**References**  
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013
